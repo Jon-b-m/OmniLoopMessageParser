@@ -40,7 +40,7 @@ def getAnalysisIO(pathOption, loopType, vFlag, macFlag):
             topPath = os.path.expanduser('~/dev/LoopReportRepository')
             print(' *** Top Path for Mac: ', topPath)
         else:
-            topPath = os.path.expanduser('/Volumes/'Macintosh HD'/usr/jbm')
+            topPath = os.path.expanduser('/Jon16mbp/User/jbm')
     elif thisPlatform == 'Windows':
         topPath = 'm:/SharedFiles'
     else:
