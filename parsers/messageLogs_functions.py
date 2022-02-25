@@ -47,9 +47,11 @@ FIXME_RE = re.compile(r'(?!#).(##+.*)')
 # Add new ## PodInfoFaultEvent markdown heading
 # Add new ## Device Communication Log markdown heading:
 #  note it's either MessageLog or Device Communication Log
-MARKDOWN_HEADINGS_TO_EXTRACT = ['OmnipodPumpManager', 'MessageLog',
+MARKDOWN_HEADINGS_TO_EXTRACT = ['OmnipodPumpManager', 'OmniBLEPumpManager',
+                                'MessageLog', 'Device Communication Log',
                                 'PodState', 'PodInfoFaultEvent',
-                                'Device Communication Log', 'LoopVersion']
+                                'LoopVersion', 'Version', 'Build Details',
+                                ]
 
 
 # this is only called for files that end in ".md"
@@ -64,10 +66,6 @@ def parse_filehandle(filehandle):
     # read content from file
     content = filehandle.read()
 
-    # saved first lines in case LoopVersion not found
-    maxChars = 1000
-    firstChars = content[0:maxChars]
-
     # remove << which breaks one line into two (in the soup section later)
     content = content.replace('<<', '')
 
@@ -80,6 +78,7 @@ def parse_filehandle(filehandle):
     for header in soup.find_all(['h2', 'h3'],
                                 text=MARKDOWN_HEADINGS_TO_EXTRACT):
         nextNode = header
+        print(nextNode)
         data.setdefault(header.text, [])
         while True:
             nextNode = nextNode.nextSibling
@@ -94,7 +93,7 @@ def parse_filehandle(filehandle):
                 data[header.text].extend(
                                          [text for text in
                                           nextNode.stripped_strings])
-    return data, firstChars
+    return data
 
 
 def splitFullMsg(hexToParse):
@@ -105,7 +104,7 @@ def splitFullMsg(hexToParse):
           https://github.com/openaps/openomni/wiki/Message-Structure
 
         An ACK hexToParse has 2 historical formats, both with empty message
-            ## MessageLog <= 10 bytes with no CRC
+            ## MessageLog <= 10 hex characters with no CRC
             ## Device Communication  has address, packetNumber and CRC
 
         Because all messages (except ACK) have seqNum,
@@ -116,28 +115,28 @@ def splitFullMsg(hexToParse):
     thisLen = len(hexToParse)
     # Handle older ## message log format for ACK
     if thisLen <= 10:
-        byte89 = 0
+        B9 = 0  # match label in wiki
         # processMsg below returns ACK from an empty msg_body
         msg_body = ''
         CRC = '0000'  # indicates no CRC provided
     else:
-        byte89 = combineByte(list(bytearray.fromhex(hexToParse[8:10])))
+        B9 = combineByte(list(bytearray.fromhex(hexToParse[8:10])))
         msg_body = hexToParse[12:-4]
         CRC = hexToParse[-4:]
     msgDict = processMsg(msg_body)
     # for ACK, extract packet number (if available) - request from Joe
     #    use seqNum key for storage
     if msgDict['msgType'] == 'ACK':
-        packetNumber = (byte89 & 0x1F)
+        packetNumber = (B9 & 0x1F)
         msgDict['seqNum'] = packetNumber
     else:
-        msgDict['seqNum'] = (byte89 & 0x3C) >> 2
+        msgDict['seqNum'] = (B9 & 0x3C) >> 2
     msgDict['rawHex'] = hexToParse
     msgDict['CRC'] = '0x' + CRC
-    noisy = 0
-    if noisy and msgDict['msgType'] == '0x0202':
-        print(f' ** {msgDict["msgMeaning"]}, gain: {msgDict["recvGain"]}, \
-                rssi: {msgDict["rssiValue"]}')
+    # noisy = 0
+    # if noisy and msgDict['msgType'] == '0x0202':
+    #    print(f' ** {msgDict["msgMeaning"]}, gain: {msgDict["recvGain"]}, \
+    #            rssi: {msgDict["rssiValue"]}')
     return address, msgDict
 
 
@@ -196,10 +195,10 @@ def device_message_dict(data):
     # extract common information, parse Omnipod, other devices ignored for now
     # note that address is ffffffff until Loop and Pod finish some init steps
     device, logAddr, action, restOfLine = stringToUnpack.split(' ', 3)
-    if device == "Omnipod":
+    if device[0:7] == "Omnipod":
         # address is what pod thinks address is
         address, msgDict = splitFullMsg(restOfLine)
-        if (logAddr.lower() != address) and (address != 'ffffffff'):
+        if noisy and (logAddr.lower() != address) and (address != 'ffffffff'):
             print('\nThe two message numbers do not agree \n',
                   logAddr, address)
             print(msg_body)
@@ -227,6 +226,13 @@ def extract_pod_manager(data):
         except ValueError:
             print('Information Only: PodState not defined in log file')
             # ab = 4 # non op
+    elif data.get('OmniBLEPumpManager'):
+        try:
+            podMgrDict = dict([[x.strip() for x in v.split(':', 1)]
+                              for v in data['PodState']])
+        except ValueError:
+            print('Information Only: PodState not defined in log file')
+            # ab = 4 # non op
     return podMgrDict
 
 
@@ -238,38 +244,18 @@ def extract_fault_info(data):
     return faultInfoDict
 
 
-def extract_loop_version(data, firstChars):
+def extract_loop_version(data):
     # set up default
     loopVersionDict = {}
-    if 'LoopVersion' in data:
+    if 'Build Details' in data:
+        loopVersionDict = dict([[x.strip() for x in v.split(':', 1)]
+                               for v in data['Build Details']])
+    elif 'LoopVersion' in data:
         loopVersionDict = dict([[x.strip() for x in v.split(':', 1)]
                                for v in data['LoopVersion']])
-
-    """
-    else:
-        print(firstChars)
-        # break this at \n
-        versionLines = []
-        idx = 0
-        foundIt = 0
-        for line in firstChars.strip().split("\n"):
-            versionLines[idx] = line
-            print(idx, versionLines[idx])
-            if versionLines[idx][3:9] == "gitRev":
-                foundIt = idx
-            idx += 1
-
-        print('FoundIt = ', foundIt)
-        print(versionLines)
-        # search for keywords in versionLines, try to extract loopVersionDict
-        if foundIt > 0:
-            idx = 0
-            loopVersionDict['Version'] = versionLines[foundIt + idx]
-            while idx < 6:
-                idx += 1
-                v = versionLines[foundIt + idx]
-                #loopVersionDict = dict([[x.strip() for x in v.split(':', 1)]
-    """
+    elif 'Version' in data:
+        loopVersionDict = dict([[x.strip() for x in v.split(':', 1)]
+                               for v in data['Version']])
 
     return loopVersionDict
 
@@ -314,7 +300,7 @@ def loop_read_file(fileDict):
     filename = fileDict['filename']
     if fileDict['loopType'].lower() == "loop":
         file = open(filename, "r", encoding='UTF8')
-        parsed_content, firstChars = parse_filehandle(file)
+        parsed_content = parse_filehandle(file)
         # ensure file is closed
         file.close()
         if parsed_content.get('MessageLog'):
@@ -346,7 +332,7 @@ def loop_read_file(fileDict):
 
         logDF = extract_messages(fileDict['recordType'], parsed_content)
         faultInfoDict = extract_fault_info(parsed_content)
-        loopVersionDict = extract_loop_version(parsed_content, firstChars)
+        loopVersionDict = extract_loop_version(parsed_content)
         if 'PodState' in parsed_content:
             podMgrDict = extract_pod_manager(parsed_content)
         else:
@@ -380,6 +366,28 @@ def loop_read_file(fileDict):
         print('loopType is not recognized')
         return loopReadDict
 
+    # There are some items that are useful to have in fileDict that are
+    # sometimes found in loopVersionDict and sometimes with different id
+    # This field has had various names over the versions of Loop, collect them
+    # fill those in with values or empty strings before returning.
+    fileDict['appNameAndVersion'] = ''
+    fileDict['buildDateString'] = ''
+    fileDict['gitRevision'] = ''
+    fileDict['gitBranch'] = ''
+    if 'appNameAndVersion' in loopVersionDict:
+        fileDict['appNameAndVersion'] = loopVersionDict['appNameAndVersion']
+    if 'codeVersion' in loopVersionDict:
+        fileDict['appNameAndVersion'] = loopVersionDict['codeVersion']
+        loopVersionDict['appNameAndVersion'] = loopVersionDict['codeVersion']
+    if 'Version' in loopVersionDict:
+        fileDict['appNameAndVersion'] = loopVersionDict['Version']
+        loopVersionDict['appNameAndVersion'] = loopVersionDict['Version']
+    if 'buildDateString' in loopVersionDict:
+        fileDict['buildDateString'] = loopVersionDict['buildDateString']
+    if 'gitRevision' in loopVersionDict:
+        fileDict['gitRevision'] = loopVersionDict['gitRevision']
+    if 'gitBranch' in loopVersionDict:
+        fileDict['gitBranch'] = loopVersionDict['gitBranch']
     loopReadDict = {'fileDict': fileDict,
                     'logDF': logDF,
                     'podMgrDict': podMgrDict,
@@ -391,12 +399,13 @@ def loop_read_file(fileDict):
 
 
 def omnipodP(message):
-    return message['device'] == "Omnipod"
+    thisIsAPod = message['device'][0:7] == "Omnipod"
+    return thisIsAPod
 
 
 def otherP(message):
-    # later can add other devices, for now, just not Omnipod
-    return message['device'] != "Omnipod"
+    thisIsAPod = message['device'][0:7] == "Omnipod"
+    return not thisIsAPod
 
 
 def extract_raw_pod(raw_content):
@@ -470,7 +479,7 @@ def extract_raw_determBasal(raw_content):
 
     # now extract the determine basal message
     # use the time pattern from messages to id end of json strings
-    determBasal_patt = "68 - DEV:"
+    determBasal_patt = " 68 - DEV:"
     pump_events = "239 - DEV: New pump events:"
     pe_num = 4  # number of lines to search for Bolus or TempBasal
 
@@ -541,7 +550,14 @@ def extract_raw_determBasal(raw_content):
                     break
                 json_message += lines_raw[jdx]
 
-            json_dict = json.loads(json_message)
+            try:
+                json_dict = json.loads(json_message)
+            except Exception as e:
+                print("Failure parsing at line number", idx)
+                print(e)
+                # skip over broken part
+                idx += 1
+                continue
 
             # check configuration of json_dict
             if "bg" in json_dict:

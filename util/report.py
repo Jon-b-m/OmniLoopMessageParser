@@ -4,6 +4,7 @@ from util.pod import getPodProgressMeaning
 from util.misc import printDict
 import matplotlib.pyplot as plt
 import numpy as np
+from util.crc_16 import crc_16
 
 
 """
@@ -78,19 +79,41 @@ def getStringFromInt(thisValue):
 
 
 def printPodInfo(podInfo, nomNumSteps):
-    if 'rssiValue' in podInfo:
+    if 'pmVersion' in podInfo:
         # print('\n')
+        printDict(podInfo)
         if 'numInitSteps' in podInfo:
             if podInfo['numInitSteps'] > nomNumSteps:
                 print('    *** Pod exceeded nominal init steps of {:d}'
                       ' ***'.format(nomNumSteps))
-            print(f'   Pod: Addr {podInfo["podAddr"]}, '
-                  f'Lot {podInfo["lot"]}, '
-                  f'Tid {podInfo["tid"]}, '
-                  f'PI: {podInfo["piVersion"]}, '
-                  f'gain {podInfo["recvGain"]}, '
-                  f'rssi {podInfo["rssiValue"]}'
-                  f', numInitSteps {podInfo["numInitSteps"]}')
+            if podInfo['podStyle'] == 'Dash':
+                # BLE pod
+                print(f' Dash Pod: Addr {podInfo["podAddr"]}, '
+                      f'Lot {podInfo["lot"]}, '
+                      f'Seq {podInfo["tid"]}, '
+                      f'Pod_FW: {podInfo["pmVersion"]}, '
+                      f'BLE_FW: {podInfo["piVersion"]}'
+                      f', numInitSteps {podInfo["numInitSteps"]}')
+            elif podInfo['podStyle'] == 'Eros':
+                # Eros Pod
+                print(f' Eros Pod: Addr {podInfo["podAddr"]}, '
+                      f'Lot {podInfo["lot"]}, '
+                      f'Tid {podInfo["tid"]}, '
+                      f'PM: {podInfo["pmVersion"]}, '
+                      f'PI: {podInfo["piVersion"]}, '
+                      f'gain {podInfo["recvGain"]}, '
+                      f'rssi {podInfo["rssiValue"]}'
+                      f', numInitSteps {podInfo["numInitSteps"]}')
+            else:
+                # Unknown Type of Pod
+                print(f' Unkn Pod: Addr {podInfo["podAddr"]}, '
+                      f'Lot {podInfo["lot"]}, '
+                      f'Tid {podInfo["tid"]}, '
+                      f'PM: {podInfo["pmVersion"]}, '
+                      f'PI: {podInfo["piVersion"]}, '
+                      f'gain {podInfo["recvGain"]}, '
+                      f'rssi {podInfo["rssiValue"]}'
+                      f', numInitSteps {podInfo["numInitSteps"]}')
         else:
             printDict(podInfo)
     return
@@ -117,19 +140,17 @@ def printLogInfoSummary(logInfoDict):
     print('            Last  message in log :', logInfoDict['last_msg'])
     print('  Total elapsed time in log (hrs) : {:6.1f}'.format(
            logInfoDict['msgLogHrs']))
-    print('                Radio on estimate : {:6.1f}, {:5.1f}%'.format(
-           logInfoDict['radioOnHrs'],
-           100*logInfoDict['radioOnHrs']/logInfoDict['msgLogHrs']))
-    #if ('send_receive_messages' in logInfoDict):
-    if (0):
-        print('   Number of messages (sent/recv) :{:5d} ({:4d} / {:4d})'.format(
-               logInfoDict['numMsgs'], logInfoDict['send_receive_messages'][1],
-               logInfoDict['send_receive_messages'][0]))
-    print('    Messages in completed actions :{:5d} : {:.1f}%'.format(
-           logInfoDict['totalCompletedMessages'],
-           logInfoDict['percentCompleted']))
-    print('          Number of nonce resyncs :{:5d}'.format(
-           logInfoDict['numberOfNonceResync']))
+    if (('send_receive_messages' in logInfoDict) and
+       (logInfoDict['send_receive_messages'].count() == 2)):
+        print('   Number of messages (sent/recv) :{:5d} ({:4d} / {:4d})'.
+              format(logInfoDict['numMsgs'],
+                     logInfoDict['send_receive_messages'][1],
+                     logInfoDict['send_receive_messages'][0]))
+    # comment out Completed Actions, have not kept that code up to date
+    # not relevant for dash testing
+    # print('    Messages in completed actions :{:5d} : {:.1f}%'.format(
+    #       logInfoDict['totalCompletedMessages'],
+    #       logInfoDict['percentCompleted']))
     print('       Total Bolus Req in log (u) : {:7.2f}'.format(
            logInfoDict['totBolus']))
     if 'autB' in logInfoDict:
@@ -140,6 +161,14 @@ def printLogInfoSummary(logInfoDict):
             print('               Automatic (u) : {:7.2f}, {:3.0f} %'.format(
                    logInfoDict['autB'],
                    100*logInfoDict['autB']/logInfoDict['totBolus']))
+    if (logInfoDict['numberOfNonceResync'] > 0):
+        print('\n   ## Eros Only')
+        print('          Number of nonce resyncs :{:5d}'.format(
+               logInfoDict['numberOfNonceResync']))
+    # radio on was only needed in early days of Eros testing, drop this
+    # print('                Radio on estimate : {:6.1f}, {:5.1f}%'.format(
+    #        logInfoDict['radioOnHrs'],
+    #        100*logInfoDict['radioOnHrs']/logInfoDict['msgLogHrs']))
     return
 
 
@@ -479,3 +508,87 @@ def generatePlot(outFlag, fileDict, df):
     plt.close(fig)
 
     return thisOutFile
+
+
+def writeDashStats(outFile, podState, fileDict, logInfoDict, numInitSteps, 
+                   faultProcessedMsg):
+    # if final message is not 0x1d or 0x0202, return without printing
+    # print('   podState columns', podState.columns)
+    # printDict(logInfoDict)
+    # printDict(fileDict)
+    secondRow = podState.iloc[1][:]
+    secondMsg = secondRow['msgDict']
+    lastRow = podState.iloc[-1][:]
+
+    # intialize variables to flag they have not been updated
+    sendMsgs = -999
+    recvMsgs = -999
+    if (('send_receive_messages' in logInfoDict) and
+       (logInfoDict['send_receive_messages'].count() == 2)):
+        sendMsgs = logInfoDict['send_receive_messages'][1]
+        recvMsgs = logInfoDict['send_receive_messages'][0]
+    Finish1 = 'Nominal'
+    Finish2 = 'Success'
+    hexPattern = ''
+    pdmRefCode = ''
+    notAFault = {'0x1c', '0x18', '0x00'}
+    if faultProcessedMsg:
+        if faultProcessedMsg['logged_fault'] not in notAFault:
+            hexPattern = faultProcessedMsg['rawHex']
+            Finish1 = faultProcessedMsg['logged_fault']
+            Finish2 = 'Fault'
+            pdmRefCode = faultProcessedMsg['pdmRefCode']
+    isItThere = os.path.isfile(outFile)
+    # now open the file
+    stream_out = open(outFile, mode='at')
+    if not isItThere:
+        # set up a table format order
+        headerString = 'Who, Finish1, Finish2, lastMsgDate, podAddr, ' + \
+                       'podHrs, logHrs, #Messages, #Sent, #Recv, ' + \
+                       '#Recv/#Send%,  InsulinDelivered, LotNo, SeqNo, ' + \
+                       'PodFW, BleFW, rawHex(Fault), PDM RefCode, ' + \
+                       'filename ' + \
+                       'appNameAndVersion, gitRevision, gitBranch, ' + \
+                       'buildDate, Comment, More Comments'
+        stream_out.write(headerString)
+        stream_out.write('\n')
+#    loopVersionDict = loopReadDict['loopVersionDict']
+#    fileDict = loopReadDict['fileDict']
+
+    if 'pmVersion' in secondMsg:
+        podFw = secondMsg['pmVersion']
+        bleFw = secondMsg['piVersion']
+        lotNo = secondMsg['lot']
+        seqNo = secondMsg['tid']
+    else:
+        podFw = ''
+        bleFw = ''
+        lotNo = ''
+        seqNo = ''
+    stream_out.write(f"{fileDict['person']},")
+    stream_out.write(f"{Finish1},")
+    stream_out.write(f"{Finish2},")
+    stream_out.write(f"{logInfoDict['last_msg']},")
+    stream_out.write(f"{lastRow['address']},")
+    stream_out.write(f"{(logInfoDict['podOnTime']/60):6.2f},")
+    stream_out.write(f"{logInfoDict['msgLogHrs']:6.2f},")
+    stream_out.write(f"{logInfoDict['numMsgs']},")
+    stream_out.write(f"{sendMsgs},")
+    stream_out.write(f"{recvMsgs},")
+    stream_out.write(f"{100*recvMsgs/sendMsgs:6.0f},")
+    stream_out.write(f"{logInfoDict['insulinDelivered']:6.2f},")
+    stream_out.write(f"{lotNo},")
+    stream_out.write(f"{seqNo},")
+    stream_out.write(f"{podFw},")
+    stream_out.write(f"{bleFw},")
+    stream_out.write(f"{hexPattern},")
+    stream_out.write(f"{pdmRefCode},")
+    stream_out.write(f"{fileDict['personFile']},")
+    stream_out.write(f"{fileDict['appNameAndVersion']},")
+    stream_out.write(f"{fileDict['gitRevision']},")
+    stream_out.write(f"{fileDict['gitBranch']},")
+    stream_out.write(f"{fileDict['buildDateString']},")
+    stream_out.write('\n')
+    stream_out.close()
+    print('  Row appended to ', outFile)
+    return

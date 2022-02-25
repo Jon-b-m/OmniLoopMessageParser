@@ -46,7 +46,7 @@ def main(fileDict, outFlag, vFlag):
     print('\n------------------------------------------')
     print('  File: {:s}'.format(fileDict["personFile"]))
     if len(loopReadDict['loopVersionDict']):
-        commentString = 'Loop Version reported in file'
+        commentString = 'Build Details reported in file'
         maxItems = 10
         printLoopDict(commentString, maxItems, loopReadDict['loopVersionDict'])
 
@@ -114,3 +114,5 @@ def main(fileDict, outFlag, vFlag):
                 # plot pandas dataframe containing detemine basal data
                 thisOutFile = generatePlot(outFlag, fileDict, determBasalDF)
                 print(' *** Determine Basal plot created:     ', thisOutFile)
+
+    print('------------------------------------------\n')
